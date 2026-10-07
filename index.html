@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera Lens Depth of Field & Hyperfocal Calculator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: linear-gradient(135deg, #52525b 0%, #27272a 100%); min-height: 100vh; }
+  .card { background: rgba(255,255,255,0.97); }
+  select, input { font-size: 16px; }
+</style>
+</head>
+<body class="p-4 md:p-8">
+<div class="max-w-3xl mx-auto">
+  <div class="card rounded-2xl shadow-2xl p-6 mb-6">
+    <h1 class="text-2xl font-bold text-zinc-800 mb-1">Depth of Field &amp; Hyperfocal Calculator</h1>
+    <p class="text-gray-500 text-sm mb-5">Calculate DoF, hyperfocal distance, and angle of view for any camera setup</p>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="sensorFormat">Sensor Format</label>
+        <select id="sensorFormat" onchange="calculate()"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400">
+          <option value="ff">Full Frame (35mm)</option>
+          <option value="apsc_c">APS-C Canon</option>
+          <option value="apsc_n">APS-C Nikon/Sony</option>
+          <option value="mft">Micro 4/3</option>
+          <option value="mf">Medium Format (Phase One 44x33)</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="focalLength">Focal Length (mm)</label>
+        <input id="focalLength" type="number" min="1" max="2000" value="50"
+          oninput="calculate()"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400">
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="aperture">Aperture</label>
+        <select id="aperture" onchange="calculate()"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400">
+          <option value="1.2">f/1.2</option>
+          <option value="1.4">f/1.4</option>
+          <option value="1.8">f/1.8</option>
+          <option value="2">f/2</option>
+          <option value="2.8">f/2.8</option>
+          <option value="4" selected>f/4</option>
+          <option value="5.6">f/5.6</option>
+          <option value="8">f/8</option>
+          <option value="11">f/11</option>
+          <option value="16">f/16</option>
+          <option value="22">f/22</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="subjectDist">Subject Distance (m)</label>
+        <input id="subjectDist" type="number" min="0.1" max="10000" step="0.1" value="5"
+          oninput="calculate()"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-zinc-400">
+      </div>
+    </div>
+  </div>
+
+  <div id="results" class="card rounded-2xl shadow-2xl p-6 mb-6">
+    <h2 class="text-xl font-bold text-zinc-800 mb-4">Results</h2>
+
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6" id="statGrid"></div>
+
+    <div class="bg-zinc-50 rounded-xl p-4 mb-5">
+      <h3 class="font-bold text-zinc-700 mb-2">Bokeh Intensity</h3>
+      <div id="bokehIndicator"></div>
+    </div>
+
+    <div>
+      <h3 class="font-bold text-zinc-700 mb-3">35mm Focal Length Equivalency Table</h3>
+      <p class="text-xs text-gray-400 mb-2">Same angle of view as your current focal length on other formats</p>
+      <div id="equivTable" class="overflow-x-auto"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const SENSORS = {
+  ff:     { name: 'Full Frame (35mm)', coc: 0.030, cropFactor: 1.0, w: 36, h: 24 },
+  apsc_c: { name: 'APS-C Canon',       coc: 0.019, cropFactor: 1.6, w: 22.3, h: 14.9 },
+  apsc_n: { name: 'APS-C Nikon/Sony',  coc: 0.020, cropFactor: 1.5, w: 23.5, h: 15.6 },
+  mft:    { name: 'Micro 4/3',          coc: 0.015, cropFactor: 2.0, w: 17.3, h: 13.0 },
+  mf:     { name: 'Medium Format',      coc: 0.050, cropFactor: 0.79, w: 44, h: 33 }
+};
+
+const STORAGE_KEY = 'dofCalc';
+
+function formatDist(m) {
+  if (m === Infinity || m > 9999) return '∞';
+  if (m >= 1000) return (m / 1000).toFixed(1) + ' km';
+  if (m >= 1) return m.toFixed(2) + ' m';
+  return (m * 100).toFixed(1) + ' cm';
+}
+
+function calcDoF(fl_mm, aperture, dist_m, coc_mm) {
+  const fl = fl_mm / 1000; // m
+  const coc = coc_mm / 1000; // m
+  const H = (fl * fl) / (aperture * coc); // hyperfocal distance
+  const d = dist_m;
+
+  let near, far;
+  if (d >= H) {
+    near = H / 2;
+    far = Infinity;
+  } else {
+    near = (H * d) / (H + d);
+    far  = (H * d) / (H - d);
+  }
+
+  const dof = far === Infinity ? Infinity : far - near;
+  return { near, far, dof, hyperfocal: H };
+}
+
+function calcAoV(fl_mm, sensorW_mm, sensorH_mm) {
+  const diagSensor = Math.sqrt(sensorW_mm * sensorW_mm + sensorH_mm * sensorH_mm);
+  const aovDiag = 2 * Math.atan(diagSensor / (2 * fl_mm)) * 180 / Math.PI;
+  const aovH = 2 * Math.atan(sensorW_mm / (2 * fl_mm)) * 180 / Math.PI;
+  const aovV = 2 * Math.atan(sensorH_mm / (2 * fl_mm)) * 180 / Math.PI;
+  return { diag: aovDiag, horizontal: aovH, vertical: aovV };
+}
+
+function bokehDesc(dof_m, aperture) {
+  if (dof_m === Infinity) return { label: 'Deep', color: 'bg-blue-100 text-blue-700', bar: 100 };
+  if (dof_m < 0.3) return { label: 'Very Shallow (extreme bokeh)', color: 'bg-red-100 text-red-700', bar: 10 };
+  if (dof_m < 1.0) return { label: 'Shallow (strong bokeh)', color: 'bg-orange-100 text-orange-700', bar: 25 };
+  if (dof_m < 3.0) return { label: 'Moderate', color: 'bg-yellow-100 text-yellow-700', bar: 55 };
+  return { label: 'Deep (minimal bokeh)', color: 'bg-blue-100 text-blue-700', bar: 85 };
+}
+
+function calculate() {
+  const sensorKey = document.getElementById('sensorFormat').value;
+  const fl = parseFloat(document.getElementById('focalLength').value) || 50;
+  const ap = parseFloat(document.getElementById('aperture').value) || 4;
+  const dist = parseFloat(document.getElementById('subjectDist').value) || 5;
+
+  const sensor = SENSORS[sensorKey];
+  const { near, far, dof, hyperfocal } = calcDoF(fl, ap, dist, sensor.coc);
+  const aov = calcAoV(fl, sensor.w, sensor.h);
+  const bokeh = bokehDesc(dof, ap);
+
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ sensorKey, fl, ap, dist }));
+
+  const stats = [
+    { label: 'Near Focus Limit', value: formatDist(near) },
+    { label: 'Far Focus Limit', value: formatDist(far) },
+    { label: 'Total DoF', value: formatDist(dof) },
+    { label: 'Hyperfocal Dist.', value: formatDist(hyperfocal) },
+    { label: 'AoV (diagonal)', value: aov.diag.toFixed(1) + '°' },
+    { label: 'AoV (horiz × vert)', value: aov.horizontal.toFixed(1) + '° × ' + aov.vertical.toFixed(1) + '°' }
+  ];
+
+  let statHtml = '';
+  stats.forEach(s => {
+    statHtml += `<div class="bg-zinc-50 rounded-xl p-3 text-center">
+      <div class="text-xs text-zinc-500 font-medium uppercase mb-1 leading-tight">${escapeHtml(s.label)}</div>
+      <div class="font-bold text-zinc-800 text-base">${escapeHtml(s.value)}</div>
+    </div>`;
+  });
+  document.getElementById('statGrid').innerHTML = statHtml;
+
+  document.getElementById('bokehIndicator').innerHTML = `
+    <div class="flex items-center gap-3">
+      <span class="px-3 py-1 rounded-full text-sm font-semibold ${bokeh.color}">${escapeHtml(bokeh.label)}</span>
+    </div>
+    <div class="mt-2 bg-gray-200 rounded-full h-3">
+      <div class="h-3 rounded-full bg-zinc-600 transition-all" style="width:${bokeh.bar}%"></div>
+    </div>
+    <div class="flex justify-between text-xs text-gray-400 mt-0.5"><span>Shallow DoF (bokeh)</span><span>Deep DoF</span></div>`;
+
+  // Equivalency table — same AoV on each format
+  const targetAoVDeg = aov.diag;
+  const targetAoVRad = targetAoVDeg * Math.PI / 180;
+
+  let eqHtml = '<table class="w-full text-sm"><thead><tr class="border-b-2 border-zinc-200 text-xs text-zinc-600 uppercase">';
+  eqHtml += '<th class="py-2 pr-3 text-left">Format</th><th class="py-2 pr-3 text-left">Equiv. FL</th><th class="py-2 text-left">Crop Factor</th></tr></thead><tbody>';
+
+  Object.entries(SENSORS).forEach(([key, s]) => {
+    const diagSensor = Math.sqrt(s.w * s.w + s.h * s.h);
+    const equivFl = diagSensor / (2 * Math.tan(targetAoVRad / 2));
+    const isCurrent = key === sensorKey;
+    eqHtml += `<tr class="border-b border-gray-100 ${isCurrent ? 'bg-zinc-50' : ''}">
+      <td class="py-2 pr-3 font-medium text-gray-700">${isCurrent ? '▶ ' : ''}${escapeHtml(s.name)}</td>
+      <td class="py-2 pr-3 font-bold text-zinc-700">${equivFl.toFixed(0)}mm</td>
+      <td class="py-2 text-gray-400">×${s.cropFactor}</td>
+    </tr>`;
+  });
+  eqHtml += '</tbody></table>';
+  document.getElementById('equivTable').innerHTML = eqHtml;
+}
+
+// Restore
+const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+if (saved) {
+  if (saved.sensorKey) document.getElementById('sensorFormat').value = saved.sensorKey;
+  if (saved.fl) document.getElementById('focalLength').value = saved.fl;
+  if (saved.ap) document.getElementById('aperture').value = saved.ap;
+  if (saved.dist) document.getElementById('subjectDist').value = saved.dist;
+}
+calculate();
+</script>
+</body>
+</html>
